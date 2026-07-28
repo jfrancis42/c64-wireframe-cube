@@ -5,7 +5,16 @@ A rotating 3D wireframe cube on the Commodore 64, computed live in
 positions. Every frame does the rotation, projection, and line drawing
 from first principles.
 
-## Requirements
+## Try it without building
+
+Prebuilt `cube.prg` and `cube.d64` are checked in. Just point VICE at the
+disk image:
+
+```
+x64sc -autostart cube.d64
+```
+
+## Requirements (to build it yourself)
 
 - [64tass](https://sourceforge.net/projects/tass64/) — 6502 cross-assembler
   (Debian/Ubuntu: `apt install 64tass`).
@@ -84,6 +93,8 @@ watching cycle counts between successive `inc angle_y` events.
 
 - `cube.asm` — the source (64tass syntax).
 - `Makefile` — assemble, package, and launch.
+- `cube.prg` — assembled program, ready to load.
+- `cube.d64` — disk image containing `cube.prg`, ready to autostart.
 - `README.md` — this file.
 
 ## References
