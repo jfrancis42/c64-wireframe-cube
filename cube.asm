@@ -1,6 +1,16 @@
 ; ═════════════════════════════════════════════════════════════════════════
 ;  C64 Rotating Wireframe Cube — 64tass syntax
 ;
+;  Copyright (C) 2026 Jeff Francis
+;
+;  This program is free software: you can redistribute it and/or modify it
+;  under the terms of the GNU General Public License as published by the Free
+;  Software Foundation, either version 3 of the License, or (at your option)
+;  any later version. It is distributed in the hope that it will be useful,
+;  but WITHOUT ANY WARRANTY; without even the implied warranty of
+;  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General
+;  Public License (LICENSE) for more details.
+;
 ;  A rotating 3D wireframe cube, computed fresh every frame — no
 ;  precomputed animation, no lookup-of-final-pixels. Written to be
 ;  read: each routine has a header comment describing what it does
@@ -66,7 +76,7 @@
 ; ═════════════════════════════════════════════════════════════════════════
 
 ; ═════════════════════════════════════════════════════════════════════════
-;  BASIC stub: 10 SYS 2064
+;  BASIC stub: 10 SYS 2080
 ;
 ;  A .prg file's first two bytes are its load address (little-endian);
 ;  when this file loads with `,8,1` those bytes place the rest at $0801,
@@ -79,25 +89,31 @@
 ;    - N bytes: token stream (single-byte tokens for keywords, ASCII
 ;               for everything else), terminated by a $00 byte.
 ;
-;  Our line "10 SYS 2064" tokenizes as:
+;  Our line "10 SYS 2080" tokenizes as:
 ;    $9E "2064" $00     ← "SYS " is the $9E token, then ASCII "2064",
 ;                         then the line terminator.
 ;
 ;  Total program: link → line-10 record → two zero bytes (end-of-program
-;  marker at end_line). Then the entry point at $0810 = 2064 decimal,
-;  which is where `SYS 2064` transfers control.
+;  marker at end_line). Then the entry point at $0820 = 2080 decimal,
+;  which is where `SYS 2080` transfers control.
 ; ═════════════════════════════════════════════════════════════════════════
+; The one place the version lives; the Makefile reads it from here.
+VERSION = "1.0.0"
+
         * = $0801
 
         .word end_line          ; link to next line = end-of-program marker
         .word 10                ; line number 10
         .byte $9e               ; SYS token
-        .text "2064"            ; argument to SYS (ASCII, not binary)
-        .byte 0                 ; end of line
+                                ; the SYS argument is the entry point below,
+                                ; in decimal; ":REM ..." makes LIST show the
+                                ; version
+        .null format("%4d", entry), ":", $8f, " CUBE ", VERSION
 end_line:
         .word 0                 ; end of program (null link)
 
-        * = $0810               ; machine code starts here = decimal 2064
+        * = $0820               ; machine code starts here = decimal 2080
+entry
 
 ; ═════════════════════════════════════════════════════════════════════════
 ;  Zero-page workspace
@@ -228,7 +244,7 @@ NUM_EDGES = 12
 NUM_VERTS = 8
 
 ; ═════════════════════════════════════════════════════════════════════════
-;  ENTRY POINT — `SYS 2064` lands here.
+;  ENTRY POINT — `SYS 2080` lands here.
 ;
 ;  Boot sequence:
 ;    1. Disable IRQs (we don't want the KERNAL cursor blinking on top
@@ -345,7 +361,15 @@ fill_scr:
 ;    6. flip buffers (CIA2 write)    trivial
 ;    7. advance angles               trivial
 ;
-;  Total: ~212k cycles ≈ ~4.7 fps on real PAL C64 hardware.
+;  Total (measured in VICE, averaged over frames):
+;      NTSC  ~201k cycles ≈ 5.1 fps  (1.0227 MHz, 263 raster lines)
+;      PAL   ~216k cycles ≈ 4.6 fps  (0.9852 MHz, 312 raster lines)
+;
+;  Nothing here is tied to one video standard: the only timing dependency
+;  is waiting for raster line 250, which is below the visible area (which
+;  ends at line 250) on both. NTSC is simply faster, because its CPU is
+;  faster and its frames are shorter, so the cube tumbles about 12% more
+;  quickly there.
 ; ═════════════════════════════════════════════════════════════════════════
 loop:
         ; 1 — clear the back buffer (whichever bitmap isn't on screen)
@@ -406,10 +430,9 @@ loop:
         jmp loop
 
 ; ═════════════════════════════════════════════════════════════════════════
-;  WAIT VBLANK — spin until the raster reaches line 250, well below the
-;  visible area (which ends at line 200). Any writes that happen while
-;  the raster is between 250 and the end of the frame won't be seen
-;  mid-scan.
+;  WAIT VBLANK — spin until the raster reaches line 250, the last line of
+;  the visible area on both NTSC and PAL. Any writes that happen after
+;  that, before the raster wraps, won't be seen mid-scan.
 ;
 ;  VIC_RASTER = $d012 is the low 8 bits of the current raster line.
 ;  Line 250 fits in 8 bits so we don't need to test the high bit
