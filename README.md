@@ -5,7 +5,7 @@ assembly** — no precomputed animation, no lookup of final pixel positions.
 Every frame does the rotation, projection, hidden-line removal and line drawing
 from first principles, on a 1 MHz 8-bit CPU with no multiply instruction.
 
-Version 1.0.0 · GPL-3.0 · 1,777 bytes
+Version 1.1.0 · GPL-3.0 · 1,971 bytes
 
 ![The cube, mid-tumble](docs/cube.png)
 
@@ -68,8 +68,10 @@ version number lives in one place, the `VERSION` line near the top of
    signed 8×8 → 16-bit arithmetic: **96 multiplies**.
 2. **Decide which faces point at the viewer**, from the sign of each face's
    rotated Z normal (2 more multiplies).
-3. **Draw the visible edges** as Bresenham lines into the back buffer.
-4. **Wait for the raster** to leave the visible area, then flip the VIC's view
+3. **Project** each vertex with a perspective divide — one table lookup and
+   one multiply per axis, no division routine (see below).
+4. **Draw the visible edges** as Bresenham lines into the back buffer.
+5. **Wait for the raster** to leave the visible area, then flip the VIC's view
    to the buffer just drawn.
 
 Angles are 0–63, so a full turn is 64 steps, matching the 64-entry sine table.
@@ -102,7 +104,27 @@ interesting tumble.
   with the ROM visible, the read half XORs pixel bits with BASIC bytecode.
   Clearing bit 0 of `$01` (LORAM) at boot maps the RAM underneath, so the CPU
   sees what the VIC sees.
+- **Perspective without division.** Projecting properly means dividing by
+  `DIST − z`, and the 6502 has no divide. It does not need one: the quotient
+  is precomputed. `PERSP_TBL[z + 64]` holds `round(64 · DIST / (DIST − z))`
+  for `DIST = 340`, so projection is a table lookup plus one signed multiply
+  per axis, reusing the quarter-square multiply already here. That is 16
+  extra multiplies against the 96 the rotation already costs. The nearest
+  corner draws about 1.39x the size of the farthest — enough to read as
+  solid without looking like a fish-eye lens.
+
+  The sign matters and is easy to get backwards: `+Z` points **at** the
+  viewer, which is the same convention `calc_face_vis` uses, so the divisor
+  is `DIST − z` and **not** `DIST + z`. Inverting it draws far corners larger
+  than near ones, which does not look obviously broken — it just looks like a
+  badly distorted cube.
 - **Inlined pixel plotting** inside the Bresenham loop: no JSR/RTS per pixel.
+  Pixels are ORed in, not XORed. XOR looks equivalent when the back buffer is
+  cleared every frame, but only while no pixel is written twice — and
+  adjacent edges always write their shared vertex twice, so every corner of
+  the cube lost a pixel. At a near-edge-on orientation two edges can run
+  almost parallel a pixel apart and cancel each other outright, leaving the
+  line dashed. `ORA` is the same 5 cycles and is idempotent.
 - **Precomputed row addresses.** 200-entry tables map a Y coordinate to the
   address of pixel (0, Y). One `back_bmp_offset` variable (`$00` or `$80`),
   added to the high byte, redirects drawing to whichever bitmap is currently
@@ -128,8 +150,6 @@ interesting tumble.
 - **8-bit Bresenham error.** The current error term is 16-bit; the coordinates
   are small enough that 8 bits might do, but the `2·err` in the standard
   formulation overflows, so it needs reformulating.
-- **Perspective projection**, dividing by `z + k` instead of projecting
-  straight down the Z axis. That needs a division routine.
 
 ## References
 

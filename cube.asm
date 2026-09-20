@@ -840,11 +840,20 @@ dl_plot_nobump:
         tay
         lda BIT_MASK,y
 
-        ; XOR the pixel into the bitmap byte. (Since we clear the back
-        ; buffer each frame, this is effectively an OR — but XOR costs
-        ; the same and keeps the door open for XOR-based effects.)
+        ; OR the pixel into the bitmap byte.
+        ;
+        ; This used to be EOR, on the reasoning that clearing the back
+        ; buffer each frame makes XOR equivalent to OR. That holds only
+        ; while no pixel is written twice — and adjacent edges always
+        ; write their shared vertex twice, so every corner of the cube
+        ; lost a pixel. Worse, at a near-edge-on orientation two edges
+        ; can run almost parallel a pixel apart, and every pixel where
+        ; they coincide cancels: the line comes out dashed.
+        ;
+        ; ORA is the same 5 cycles and is idempotent, so overlapping
+        ; writes simply stay lit.
         ldy #0
-        eor (ZP_BPTR),y
+        ora (ZP_BPTR),y
         sta (ZP_BPTR),y
 
 dl_after_plot:
@@ -1276,17 +1285,62 @@ pv_loop:
         lda ZP_TMP3
         sta ry
 
-        ; PROJECT — parallel projection, offset only.
-        ; The cube's ±32 range after rotation stays roughly the same,
-        ; so +128 puts it in [96..160] X and +100 in [68..132] Y —
-        ; comfortably inside our 256×200 usable area.
-        lda rx
+        ; PROJECT — perspective, by table lookup instead of division.
+        ;
+        ; Screen offset = r · SCALE / (DIST − rz).  +Z points AT the
+        ; viewer — that is the same convention calc_face_vis uses, where
+        ; a face is visible when its rotated Z-normal is positive — so a
+        ; vertex with larger Z is NEARER and the divisor is DIST − rz,
+        ; NOT DIST + rz.  Getting that backwards draws the far corners
+        ; larger than the near ones, which does not look obviously
+        ; broken, it just looks like a badly distorted cube.
+        ;
+        ; The 6502 has no divide, but it does not need one: the whole
+        ; quotient is precomputed. PERSP_TBL[rz + 64] holds
+        ;
+        ;     round(64 · DIST / (DIST − rz))    for DIST = 340
+        ;
+        ; so the projection is one table lookup plus one signed multiply
+        ; per axis, reusing the quarter-square multiply already here.
+        ; Sixteen extra multiplies a frame against the 96 the rotation
+        ; already costs — under 1% more work for real depth.
+        ;
+        ; rz is bounded by ±32·√3 ≈ ±56 after rotation, so rz + 64 is
+        ; always a valid 0..127 index and needs no clamping.
+        lda rz
+        clc
+        adc #64
+        tax
+        lda PERSP_TBL,x
+        sta persp_m
+
+        lda rx                  ; X: (rx · m) >> 6, then centre
+        sta MUL_A
+        lda persp_m
+        sta MUL_B
+        jsr mul8s
+        lda MUL_RLO
+        sta acc_lo
+        lda MUL_RHI
+        sta acc_hi
+        jsr asr6_acc
+        lda acc_lo
         clc
         adc #128
         ldx ZP_VI
         sta cur_x,x
 
-        lda ry
+        lda ry                  ; Y: same again
+        sta MUL_A
+        lda persp_m
+        sta MUL_B
+        jsr mul8s
+        lda MUL_RLO
+        sta acc_lo
+        lda MUL_RHI
+        sta acc_hi
+        jsr asr6_acc
+        lda acc_lo
         clc
         adc #100
         ldx ZP_VI
@@ -1467,6 +1521,34 @@ EDGE_FACES:
         .byte 0,4,  0,5,  1,4,  1,5     ; Y-parallel edges (4..7)
         .byte 2,4,  2,5,  3,4,  3,5     ; X-parallel edges (8..11)
 
+; ── PERSPECTIVE SCALE TABLE ──────────────────────────────────────────────
+; PERSP_TBL[rz + 64] = round(64 · DIST / (DIST − rz)), DIST = 340.
+;
+; Multiplying a rotated coordinate by this and shifting right 6 performs
+; the perspective divide with no division: at rz = 0 the entry is 64, so
+; the scale is exactly 1; nearer vertices (larger rz) get a bigger
+; multiplier and draw further from centre.
+;
+; The nearest corner ends up about 1.39x the size of the farthest, which
+; reads as solid without looking like a fish-eye lens.
+PERSP_TBL:
+        .byte  54,  54,  54,  54,  54,  55,  55,  55
+        .byte  55,  55,  55,  55,  56,  56,  56,  56
+        .byte  56,  56,  56,  57,  57,  57,  57,  57
+        .byte  57,  57,  58,  58,  58,  58,  58,  58
+        .byte  58,  59,  59,  59,  59,  59,  59,  60
+        .byte  60,  60,  60,  60,  60,  61,  61,  61
+        .byte  61,  61,  61,  62,  62,  62,  62,  62
+        .byte  63,  63,  63,  63,  63,  63,  64,  64
+        .byte  64,  64,  64,  65,  65,  65,  65,  65
+        .byte  66,  66,  66,  66,  66,  67,  67,  67
+        .byte  67,  67,  68,  68,  68,  68,  68,  69
+        .byte  69,  69,  69,  70,  70,  70,  70,  70
+        .byte  71,  71,  71,  71,  72,  72,  72,  72
+        .byte  73,  73,  73,  73,  74,  74,  74,  74
+        .byte  75,  75,  75,  75,  76,  76,  76,  76
+        .byte  77,  77,  77,  77,  78,  78,  78,  79
+
 ; ═════════════════════════════════════════════════════════════════════════
 ;  UNINITIALIZED RAM
 ;
@@ -1500,6 +1582,7 @@ acc_hi      .byte 0             ; 16-bit accumulator, high byte
 rx          .byte 0
 ry          .byte 0
 rz          .byte 0
+persp_m     .byte 0             ; perspective multiplier for this vertex
 
 ; ── Face visibility flags ────────────────────────────────────────────────
 ; face_vis[i] = 1 if face i is front-facing, else 0.
